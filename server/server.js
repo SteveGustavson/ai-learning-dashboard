@@ -1,5 +1,5 @@
 // server/server.js
-// Dynamic server: pulls RSS feeds, fetches full pages, summarizes, classifies, caches.
+// Dynamic server: pulls RSS feeds, fetches full pages, summarizes (if quota allows), classifies, caches.
 
 const express = require('express');
 const path = require('path');
@@ -14,44 +14,64 @@ const { Readability } = require('@mozilla/readability');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- Config via env ---
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
-const REFRESH_MINUTES = parseInt(process.env.REFRESH_MINUTES || '60', 10);
-const MAX_ITEMS = parseInt(process.env.MAX_ITEMS || '25', 10);
-const SUMMARIZE = (process.env.SUMMARIZE || 'true').toLowerCase() === 'true';
+// ===== Env & safe defaults =====
+function toInt(v, dflt) {
+  const n = parseInt(String(v || '').trim(), 10);
+  return Number.isFinite(n) ? n : dflt;
+}
 
-// --- Feeds (tweak as you like) ---
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
+const OPENAI_MODEL = (process.env.OPENAI_MODEL || 'gpt-4o').trim();
+const REFRESH_MINUTES_RAW = process.env.REFRESH_MINUTES;
+const REFRESH_MINUTES = toInt(REFRESH_MINUTES_RAW, 60); // default 60 minutes
+const MAX_ITEMS = toInt(process.env.MAX_ITEMS, 25);
+let SUMMARIZE = ((process.env.SUMMARIZE || 'true').trim().toLowerCase() === 'true');
+
+// Guard the refresh interval (min 5 min, max 24h)
+const REFRESH_MS = Math.min(Math.max(REFRESH_MINUTES * 60 * 1000, 5 * 60 * 1000), 24 * 60 * 60 * 1000);
+
+// ===== Feeds (reliable sources only) =====
+// Removed W&B (malformed RSS) and kept stable ones; you can add back later.
 const FEEDS = [
   'https://huggingface.co/blog/feed.xml',
+  'https://ai.googleblog.com/atom.xml',
+  'https://deepmind.google/discover/blog/feed.xml',
   'https://openai.com/blog/rss.xml',
-  'https://wandb.ai/site/blog/rss.xml',
-  'https://lilianweng.github.io/index.xml',
   'https://arxiv.org/rss/cs.LG',
   'https://arxiv.org/rss/cs.CL'
 ];
 
-// --- Middleware ---
+// ===== Middleware =====
 app.use(cors());
 app.use(bodyParser.json());
 
-// --- In-memory cache ---
+// ===== In-memory cache =====
 let cache = { updatedAt: 0, items: [] };
 
-// --- Helpers ---
-const parser = new RSSParser();
+// ===== Helpers =====
+
+// RSS parser with UA + timeouts
+const parser = new RSSParser({
+  timeout: 15000,
+  requestOptions: {
+    headers: {
+      'User-Agent': 'AILearningDashboard/1.0 (+https://example.com)'
+    }
+  }
+});
 
 // Small, dependency-free concurrency helper
 async function mapWithConcurrency(arr, concurrency, fn) {
   const results = new Array(arr.length);
   let i = 0;
   async function worker() {
-    while (i < arr.length) {
+    while (true) {
       const idx = i++;
+      if (idx >= arr.length) break;
       results[idx] = await fn(arr[idx], idx);
     }
   }
-  const workers = Array.from({ length: Math.min(concurrency, arr.length) }, worker);
+  const workers = Array.from({ length: Math.min(Math.max(concurrency, 1), arr.length) }, worker);
   await Promise.all(workers);
   return results;
 }
@@ -67,7 +87,13 @@ function classifyTrack(textA, textB = '') {
 
 async function fetchReadable(url) {
   try {
-    const r = await fetch(url, { timeout: 15000 });
+    const controller = new fetch.AbortController();
+    const to = setTimeout(() => controller.abort(), 15000);
+    const r = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'AILearningDashboard/1.0 (+https://example.com)' }
+    });
+    clearTimeout(to);
     const html = await r.text();
     const dom = new JSDOM(html, { url });
     const reader = new Readability(dom.window.document);
@@ -83,12 +109,16 @@ async function fetchReadable(url) {
   }
 }
 
+// Will be flipped off for this refresh cycle if quota is exceeded
+let summarizeDisabledForCycle = false;
+
 async function summarizeRich(title, url, fulltext) {
-  if (!OPENAI_API_KEY || !SUMMARIZE) return '';
+  if (!OPENAI_API_KEY || !SUMMARIZE || summarizeDisabledForCycle) return '';
   const messages = [
     { role: 'system', content: 'You are a precise, no-fluff summarizer for a senior product design & research leader.' },
-    { role: 'user', content:
-`Summarize the article in rich form. Output markdown with:
+    {
+      role: 'user',
+      content: `Summarize the article in rich form. Output markdown with:
 
 **Key Points (3–5 bullets)**
 **Why it matters (2 bullets)**
@@ -98,21 +128,32 @@ async function summarizeRich(title, url, fulltext) {
 Title: ${title}
 URL: ${url}
 Content (truncated below):
-${(fulltext || '').slice(0, 6000)}
-` }
+${(fulltext || '').slice(0, 6000)}`
+    }
   ];
   try {
+    const controller = new fetch.AbortController();
+    const to = setTimeout(() => controller.abort(), 15000);
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
       body: JSON.stringify({ model: OPENAI_MODEL, messages, temperature: 0.2, max_tokens: 700 })
     });
+    clearTimeout(to);
+
+    const t = await resp.text();
     if (!resp.ok) {
-      const t = await resp.text();
-      console.warn('OpenAI summarize error:', t);
+      // If we hit quota, disable summarization so we still serve content
+      if (t.includes('"insufficient_quota"') || t.toLowerCase().includes('quota')) {
+        console.warn('OpenAI quota exceeded. Disabling summarization this cycle.');
+        summarizeDisabledForCycle = true;
+      } else {
+        console.warn('OpenAI summarize error:', t);
+      }
       return '';
     }
-    const data = await resp.json();
+    const data = JSON.parse(t);
     return data?.choices?.[0]?.message?.content?.trim() || '';
   } catch (e) {
     console.warn('OpenAI summarize exception:', e.message);
@@ -121,6 +162,9 @@ ${(fulltext || '').slice(0, 6000)}
 }
 
 async function fetchFeeds() {
+  console.log('Refreshing feeds…');
+  summarizeDisabledForCycle = false; // reset for this run
+
   const collected = [];
   for (const url of FEEDS) {
     try {
@@ -135,24 +179,27 @@ async function fetchFeeds() {
         });
       }
     } catch (e) {
-      console.warn('Feed error:', url, e.message);
+      console.warn('Feed error:', url, e.message || e);
     }
   }
 
+  // Sort newest first and trim
   collected.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
   const trimmed = collected.filter(x => x.url).slice(0, MAX_ITEMS);
 
-  const enriched = await mapWithConcurrency(trimmed, 3, async (item) => {
+  // Enrich with readability + (optional) summary
+  const enriched = await mapWithConcurrency(trimmed, 2, async (item) => {
     const full = await fetchReadable(item.url);
     const rich = await summarizeRich(item.title, item.url, full || item.snippet);
     const track = classifyTrack(item.title, rich || full || item.snippet);
+    const summaryFallback = rich || (full ? full.slice(0, 800) + '…' : item.snippet || 'New article');
     return {
       id: Buffer.from(item.url).toString('base64').slice(0, 24),
       title: item.title,
       track,
-      level: 'Foundations',              // could be improved later
+      level: 'Foundations',
       type: 'Article',
-      summary: rich || item.snippet || 'New article',
+      summary: summaryFallback,
       content: `${item.source} • ${item.publishedAt || ''}`,
       url: item.url
     };
@@ -162,13 +209,14 @@ async function fetchFeeds() {
   console.log(`Feeds refreshed: ${enriched.length} items`);
 }
 
-// Kick off once on boot, then on interval
+// Kick off once on boot, then on interval (guarded)
 (async () => {
   try { await fetchFeeds(); } catch (e) { console.warn('Initial fetch failed:', e.message); }
-  setInterval(fetchFeeds, REFRESH_MINUTES * 60 * 1000);
+  const interval = Number.isFinite(REFRESH_MS) ? REFRESH_MS : 60 * 60 * 1000; // 60 min fallback
+  setInterval(fetchFeeds, interval);
 })();
 
-// --- API routes ---
+// ===== API routes =====
 
 // Live resources (allow ?refresh=1 to force)
 app.get('/api/resources', async (req, res) => {
@@ -204,11 +252,15 @@ Use the resource context if provided; be concise and actionable.`;
       return res.json({ reply: { role: 'assistant', content: 'Add OPENAI_API_KEY in your Render Environment to enable chat.' } });
     }
 
+    const controller = new fetch.AbortController();
+    const to = setTimeout(() => controller.abort(), 15000);
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
       body: JSON.stringify({ model: OPENAI_MODEL, messages, temperature: 0.2, max_tokens: 800 })
     });
+    clearTimeout(to);
 
     const text = await resp.text(); // capture raw for better error details
     if (!resp.ok) {
@@ -222,7 +274,7 @@ Use the resource context if provided; be concise and actionable.`;
   }
 });
 
-// --- Static client (built by Vite) ---
+// ===== Static client (built by Vite) =====
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
