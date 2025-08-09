@@ -1,0 +1,20 @@
+[
+  {
+    "id": "r1",
+    "title": "MLOps vs AI Ops - Intro",
+    "track": "AI Ops",
+    "level": "Foundations",
+    "type": "Article",
+    "summary": "Intro to AI Ops: monitoring, drift, CI/CD for models, observability.",
+    "content": "AI Ops focuses on operationalization of AI systems: monitoring, observability, model retraining, and incident response."
+  },
+  {
+    "id": "r2",
+    "title": "Illustrated Guide to Fine-Tuning",
+    "track": "SFT/RL",
+    "level": "Foundations",
+    "type": "Article",
+    "summary": "Overview of SFT and RLHF.",
+    "content": "SFT adjusts models using supervised data; RLHF optimizes reward signals for desired behavior."
+  }
+]

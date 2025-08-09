@@ -1,0 +1,17 @@
+{
+  "name": "ai-learning-dashboard-fullstack",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server/server.js",
+    "build": "npm --prefix client run build",
+    "postinstall": "npm --prefix client install && npm --prefix client run build"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "node-fetch": "^2.6.7"
+  }
+}
