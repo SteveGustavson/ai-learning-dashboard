@@ -4,8 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node server/server.js",
-    "build": "npm --prefix client run build",
-    "postinstall": "npm --prefix client install && npm --prefix client run build"
+    "build": "npm --prefix client run build"
   },
   "engines": { "node": ">=18" },
   "dependencies": {
