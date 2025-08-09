@@ -1,17 +1,15 @@
 // server/server.js
-// Full dynamic server: pulls RSS feeds, fetches full pages, summarizes, classifies, caches.
+// Dynamic server: pulls RSS feeds, fetches full pages, summarizes, classifies, caches.
 
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const fetch = require('node-fetch');              // v2.x (compatible with Node 18+ here)
+const fetch = require('node-fetch'); // v2.x
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const RSSParser = require('rss-parser');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
-// IMPORTANT: p-limit is ESM; in CJS you need .default:
-const pLimit = require('p-limit').default;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -42,7 +40,21 @@ let cache = { updatedAt: 0, items: [] };
 
 // --- Helpers ---
 const parser = new RSSParser();
-const limiter = pLimit(3); // avoid hammering sites
+
+// Small, dependency-free concurrency helper
+async function mapWithConcurrency(arr, concurrency, fn) {
+  const results = new Array(arr.length);
+  let i = 0;
+  async function worker() {
+    while (i < arr.length) {
+      const idx = i++;
+      results[idx] = await fn(arr[idx], idx);
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, arr.length) }, worker);
+  await Promise.all(workers);
+  return results;
+}
 
 function classifyTrack(textA, textB = '') {
   const t = `${textA} ${textB}`.toLowerCase();
@@ -130,23 +142,21 @@ async function fetchFeeds() {
   collected.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
   const trimmed = collected.filter(x => x.url).slice(0, MAX_ITEMS);
 
-  const enriched = await Promise.all(
-    trimmed.map(item => limiter(async () => {
-      const full = await fetchReadable(item.url);
-      const rich = await summarizeRich(item.title, item.url, full || item.snippet);
-      const track = classifyTrack(item.title, rich || full || item.snippet);
-      return {
-        id: Buffer.from(item.url).toString('base64').slice(0, 24),
-        title: item.title,
-        track,
-        level: 'Foundations',              // could be improved later
-        type: 'Article',
-        summary: rich || item.snippet || 'New article',
-        content: `${item.source} • ${item.publishedAt || ''}`,
-        url: item.url
-      };
-    }))
-  );
+  const enriched = await mapWithConcurrency(trimmed, 3, async (item) => {
+    const full = await fetchReadable(item.url);
+    const rich = await summarizeRich(item.title, item.url, full || item.snippet);
+    const track = classifyTrack(item.title, rich || full || item.snippet);
+    return {
+      id: Buffer.from(item.url).toString('base64').slice(0, 24),
+      title: item.title,
+      track,
+      level: 'Foundations',              // could be improved later
+      type: 'Article',
+      summary: rich || item.snippet || 'New article',
+      content: `${item.source} • ${item.publishedAt || ''}`,
+      url: item.url
+    };
+  });
 
   cache = { updatedAt: Date.now(), items: enriched };
   console.log(`Feeds refreshed: ${enriched.length} items`);
