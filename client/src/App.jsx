@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Text, Switch } from '@fluentui/react-components';
+import { Button, Card, Text, Switch, tokens } from '@fluentui/react-components';
 import ChatPanel from './ChatPanel';
 
 export default function App({ dark, setDark }) {
