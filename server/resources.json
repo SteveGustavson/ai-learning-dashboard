@@ -14,9 +14,9 @@
     "track": "SFT/RL",
     "level": "Foundations",
     "type": "Article",
-    "summary": "Overview of SFT and RLHF.",
+    "summary": "High-level overview of SFT and RLHF.",
     "content": "SFT adjusts models using supervised data; RLHF optimizes reward signals for desired behavior."
-  }
+  },
   {
     "id": "r3",
     "title": "LLM Evals Primer",
