@@ -10,7 +10,8 @@ const cors = require('cors');
 const RSSParser = require('rss-parser');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
-const pLimit = require('p-limit');
+// IMPORTANT: p-limit is ESM; in CJS you need .default:
+const pLimit = require('p-limit').default;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
