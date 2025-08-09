@@ -1,155 +1,172 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Textarea,
-  Button,
-  Avatar,
-  Text,
-  tokens
-} from '@fluentui/react-components';
+import { Textarea, Button, Avatar, Text } from '@fluentui/react-components';
 
 export default function ChatPanel({ resource, dark }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const listRef = useRef();
+  const chatEndRef = useRef(null);
 
-  // Reset thread when resource changes
+  // Scroll to bottom whenever messages change
   useEffect(() => {
-    if (resource) setMessages([{ role: 'system', content: `Context: ${resource.title}` }]);
-    else setMessages([]);
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  // Reset when resource changes
+  useEffect(() => {
+    if (resource) {
+      setMessages([
+        {
+          role: 'assistant',
+          content: `Context: ${resource.title}`,
+        },
+      ]);
+    }
   }, [resource]);
 
-  const send = async () => {
+  async function send() {
     if (!input.trim()) return;
-    const userMsg = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMsg]);
+
+    // Add the user message locally
+    setMessages((prev) => [...prev, { role: 'user', content: input }]);
+    const toSend = input;
     setInput('');
+
     try {
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          resourceId: resource ? resource.id : null,
-          message: userMsg.content
+          resourceId: resource?.id,
+          messages: [...messages, { role: 'user', content: toSend }],
         }),
       });
-      const data = await resp.json();
-      const reply = data?.reply?.content || ('Error: ' + (data?.error || 'unknown'));
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-      requestAnimationFrame(() => {
-        if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-      });
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Chat failed: ' + err.message }]);
-    }
-  };
 
-  // Accessible bubble colors (AA contrast)
-  const colors = dark
-    ? {
-        surface: '#1f1f1f',
-        assistantBg: '#2b2b2b',
-        assistantFg: '#e6e6e6',
-        userBg: '#0b6bc2',         // Fluent blue 60ish
-        userFg: '#ffffff',
-        hint: '#9aa0a6',
-        divider: '#2e2e2e',
-        rail: '#121212'
+      const data = await resp.json();
+
+      // ✅ Improved error handling
+      if (data.reply) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: data.reply.content },
+        ]);
+      } else {
+        const details = (data.details || '').toString().slice(0, 400);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `Error: ${data.error || 'unknown'}\n${details}`,
+          },
+        ]);
       }
-    : {
-        surface: '#ffffff',
-        assistantBg: '#f3f4f6',    // ≈ #111 text for 4.5:1+
-        assistantFg: '#111111',
-        userBg: '#115ea3',         // Fluent blue 70
-        userFg: '#ffffff',
-        hint: '#5f6368',
-        divider: '#e1e4ea',
-        rail: '#fafafa'
-      };
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `Error: ${err.message}` },
+      ]);
+    }
+  }
 
   return (
-    // Full-height column layout; overflow managed inside
     <div
       style={{
-        height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        background: colors.rail
+        height: '100%',
+        borderLeft: dark ? '1px solid #333' : '1px solid #ddd',
       }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 4px' }}>
-        <Avatar name="AI" />
-        <div>
-          <Text weight="semibold">AI Chat Assistant</Text>
-          <div style={{ fontSize: 12, color: colors.hint }}>
-            {resource ? 'Ask about the selected resource' : 'Pick a resource to start'}
-          </div>
+      <div
+        style={{
+          padding: 12,
+          borderBottom: dark ? '1px solid #333' : '1px solid #ddd',
+        }}
+      >
+        <Text weight="semibold">AI Chat Assistant</Text>
+        <div style={{ fontSize: 12, opacity: 0.7 }}>
+          Ask about the selected resource
         </div>
       </div>
 
-      {/* Messages list */}
+      {/* Messages */}
       <div
-        ref={listRef}
         style={{
           flex: 1,
-          minHeight: 0,                // critical: allows the flex child to scroll instead of overflow
           overflowY: 'auto',
-          padding: '8px 4px 12px 0'
+          padding: 12,
+          background: dark ? '#111' : '#fafafa',
         }}
       >
-        {messages.map((m, i) => {
-          const isUser = m.role === 'user';
-          return (
+        {messages.map((m, i) => (
+          <div
+            key={i}
+            style={{
+              marginBottom: 12,
+              display: 'flex',
+              flexDirection: m.role === 'user' ? 'row-reverse' : 'row',
+              alignItems: 'flex-start',
+            }}
+          >
+            <Avatar
+              size={32}
+              name={m.role === 'user' ? 'You' : 'AI'}
+              color={m.role === 'user' ? 'brand' : 'neutral'}
+            />
             <div
-              key={i}
               style={{
-                marginBottom: 10,
-                display: 'flex',
-                flexDirection: isUser ? 'row-reverse' : 'row',
-                gap: 8
+                marginLeft: m.role === 'user' ? 0 : 8,
+                marginRight: m.role === 'user' ? 8 : 0,
+                padding: 8,
+                background:
+                  m.role === 'user'
+                    ? dark
+                      ? '#2563eb'
+                      : '#dbeafe'
+                    : dark
+                    ? '#1f2937'
+                    : '#fff',
+                color:
+                  m.role === 'user'
+                    ? dark
+                      ? '#fff'
+                      : '#000'
+                    : dark
+                    ? '#e5e7eb'
+                    : '#111',
+                borderRadius: 6,
+                maxWidth: '75%',
+                whiteSpace: 'pre-wrap',
               }}
             >
-              <div
-                style={{
-                  maxWidth: '78%',
-                  background: isUser ? colors.userBg : colors.assistantBg,
-                  color: isUser ? colors.userFg : colors.assistantFg,
-                  padding: 10,
-                  borderRadius: 12,
-                  lineHeight: 1.35,
-                  boxShadow: isUser
-                    ? '0 1px 0 rgba(0,0,0,0.06)'
-                    : 'inset 0 0 0 1px rgba(0,0,0,0.04)'
-                }}
-              >
-                <div style={{ fontSize: 13 }}>{m.content}</div>
-              </div>
+              {m.content}
             </div>
-          );
-        })}
+          </div>
+        ))}
+        <div ref={chatEndRef} />
       </div>
 
-      {/* Sticky composer */}
+      {/* Input */}
       <div
         style={{
-          position: 'sticky',
-          bottom: 0,
-          background: colors.rail,
-          paddingTop: 8,
-          paddingBottom: 8
+          padding: 12,
+          borderTop: dark ? '1px solid #333' : '1px solid #ddd',
+          display: 'flex',
+          gap: 8,
         }}
       >
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Textarea
-            value={input}
-            onChange={(_, data) => setInput(data.value)}
-            placeholder="Ask GPT about this resource..."
-            style={{ flex: 1 }}
-          />
-          <Button appearance="primary" onClick={send}>
-            Send
-          </Button>
-        </div>
+        <TextArea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask GPT about this resource..."
+          style={{ flex: 1 }}
+          resize="none"
+        />
+        <Button appearance="primary" onClick={send}>
+          Send
+        </Button>
       </div>
     </div>
   );
