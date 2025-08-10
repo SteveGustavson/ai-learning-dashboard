@@ -8,7 +8,6 @@ export default function App({ dark, setDark }) {
   const [selected, setSelected] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Colors tuned for a11y in light mode; subtle in dark.
   const palette = useMemo(
     () => ({
       pageBg: dark ? '#1f1f1f' : '#f4f6f8',
@@ -17,7 +16,7 @@ export default function App({ dark, setDark }) {
       railBg: dark ? '#181818' : '#ffffff',
       cardBg: dark ? '#222' : '#fff',
       border: dark ? '#34373b' : '#D1D5DB',
-      accent: dark ? '#60a5fa' : '#1f6feb', // blue w/ good contrast
+      accent: dark ? '#60a5fa' : '#1f6feb',
       divider: dark ? 'linear-gradient(to bottom, #2c2c2c, #3a3a3a)' : 'linear-gradient(to bottom, #E5E7EB, #D1D5DB)',
       chip: dark ? '#0b61a4' : '#e6f2ff',
       chipText: dark ? '#e6f3ff' : '#0b3d91',
@@ -29,15 +28,13 @@ export default function App({ dark, setDark }) {
     setLoading(true);
     setErr('');
     try {
-      const url = bustCache
-        ? `/api/news?ts=${Date.now()}`
-        : `/api/news`;
+      const url = bustCache ? `/api/news?ts=${Date.now()}` : `/api/news`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const j = await res.json();
       const items = Array.isArray(j.items) ? j.items : [];
       setNews(items);
-      if (items.length && !selected) setSelected(items[0]);
+      if (items.length) setSelected(items[0]);
     } catch (e) {
       setErr(e.message || 'Failed to load news');
     } finally {
@@ -56,7 +53,6 @@ export default function App({ dark, setDark }) {
     setRefreshing(false);
   };
 
-  // Simple date helper
   const fmtDate = (d) => {
     if (!d) return '';
     try {
@@ -80,7 +76,7 @@ export default function App({ dark, setDark }) {
         boxSizing: 'border-box',
       }}
     >
-      {/* Left rail: News list */}
+      {/* Left: news list */}
       <div
         style={{
           display: 'flex',
@@ -89,7 +85,7 @@ export default function App({ dark, setDark }) {
           border: `1px solid ${palette.border}`,
           borderRadius: 12,
           overflow: 'hidden',
-          minHeight: 0, // allow child to size for overflow scroll
+          minHeight: 0,
         }}
       >
         <div
@@ -107,7 +103,7 @@ export default function App({ dark, setDark }) {
               AI Radar
             </Text>
             <div style={{ fontSize: 12, color: palette.subText }}>
-              Curated from BAIR, The Gradient, MSR, Google AI, DeepMind, arXiv
+              BAIR • The Gradient • MSR • Google AI • DeepMind • arXiv
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -197,7 +193,7 @@ export default function App({ dark, setDark }) {
         </div>
       </div>
 
-      {/* Center: Selected item */}
+      {/* Center: selected detail */}
       <div
         style={{
           background: palette.railBg,
@@ -261,7 +257,7 @@ export default function App({ dark, setDark }) {
         )}
       </div>
 
-      {/* Right rail: Chat */}
+      {/* Right: chat */}
       <div
         style={{
           background: palette.railBg,
@@ -271,22 +267,19 @@ export default function App({ dark, setDark }) {
           display: 'flex',
           flexDirection: 'column',
           minHeight: 0,
-          overflow: 'hidden', // ensure ChatPanel stays inside
+          overflow: 'hidden',
         }}
       >
-        {/* We lazy-load ChatPanel to avoid import order issues */}
-        <ChatMount selected={selected} dark={dark} />
+        <ChatMount dark={dark} />
       </div>
     </div>
   );
 }
 
-/** Separate component so we can require() lazily (avoids circular import hiccups during edits) */
-function ChatMount({ selected, dark }) {
+function ChatMount({ dark }) {
   const [ChatPanel, setChatPanel] = useState(null);
 
   useEffect(() => {
-    // dynamic import
     import('./ChatPanel').then((m) => setChatPanel(() => m.default));
   }, []);
 
@@ -299,8 +292,6 @@ function ChatMount({ selected, dark }) {
     );
   }
 
-  // NOTE: ChatPanel currently uses /api/chat which reads /server/resources.json.
-  // Passing the news item won't give server-side context yet, but keeps UX consistent.
-  // We can upgrade the server later to accept inline context.
+  // Not passing resource yet; server-side /api/chat still reads server/resources.json
   return <ChatPanel resource={null} dark={dark} />;
 }
