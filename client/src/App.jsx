@@ -1,104 +1,306 @@
-import React, { useEffect, useState } from 'react';
-import { Button, Card, Text, Switch } from '@fluentui/react-components';
-import ChatPanel from './ChatPanel';
+import React, { useEffect, useState, useMemo } from 'react';
+import { Button, Card, Text, Switch, Divider, Spinner } from '@fluentui/react-components';
 
 export default function App({ dark, setDark }) {
-  const [resources, setResources] = useState([]);
+  const [news, setNews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
   const [selected, setSelected] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Colors tuned for a11y in light mode; subtle in dark.
+  const palette = useMemo(
+    () => ({
+      pageBg: dark ? '#1f1f1f' : '#f4f6f8',
+      text: dark ? '#f3f3f3' : '#111827',
+      subText: dark ? '#b5b5b5' : '#374151',
+      railBg: dark ? '#181818' : '#ffffff',
+      cardBg: dark ? '#222' : '#fff',
+      border: dark ? '#34373b' : '#D1D5DB',
+      accent: dark ? '#60a5fa' : '#1f6feb', // blue w/ good contrast
+      divider: dark ? 'linear-gradient(to bottom, #2c2c2c, #3a3a3a)' : 'linear-gradient(to bottom, #E5E7EB, #D1D5DB)',
+      chip: dark ? '#0b61a4' : '#e6f2ff',
+      chipText: dark ? '#e6f3ff' : '#0b3d91',
+    }),
+    [dark]
+  );
+
+  async function loadNews({ bustCache = false } = {}) {
+    setLoading(true);
+    setErr('');
+    try {
+      const url = bustCache
+        ? `/api/news?ts=${Date.now()}`
+        : `/api/news`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = await res.json();
+      const items = Array.isArray(j.items) ? j.items : [];
+      setNews(items);
+      if (items.length && !selected) setSelected(items[0]);
+    } catch (e) {
+      setErr(e.message || 'Failed to load news');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    fetch('/api/resources')
-      .then(r => r.json())
-      .then(j => setResources(j.resources || []))
-      .catch(() => setResources([]));
+    loadNews();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadNews({ bustCache: true });
+    setRefreshing(false);
+  };
+
+  // Simple date helper
+  const fmtDate = (d) => {
+    if (!d) return '';
+    try {
+      const dt = new Date(d);
+      return dt.toLocaleString();
+    } catch {
+      return d;
+    }
+  };
 
   return (
     <div
       style={{
-        display: 'flex',
-        height: '100vh',
+        display: 'grid',
+        gridTemplateColumns: '340px 1fr 440px',
         gap: 16,
-        padding: 24,
-        background: dark ? '#1e1e1e' : '#f3f4f6',
-        color: dark ? '#ffffff' : '#000000'
+        height: '100vh',
+        padding: 16,
+        background: palette.pageBg,
+        color: palette.text,
+        boxSizing: 'border-box',
       }}
     >
-      {/* Left rail */}
-      <div style={{ width: 320, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <h2 style={{ margin: 0, marginBottom: 8 }}>AI Learning Dashboard</h2>
-
-        <div style={{ marginBottom: 12 }}>
-          <Switch
-            checked={dark}
-            onChange={(_, data) => setDark(data.checked)}
-            label={dark ? 'Dark Mode' : 'Light Mode'}
-          />
+      {/* Left rail: News list */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          background: palette.railBg,
+          border: `1px solid ${palette.border}`,
+          borderRadius: 12,
+          overflow: 'hidden',
+          minHeight: 0, // allow child to size for overflow scroll
+        }}
+      >
+        <div
+          style={{
+            padding: '14px 14px 8px',
+            borderBottom: `1px solid ${palette.border}`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <div>
+            <Text as="h2" style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
+              AI Radar
+            </Text>
+            <div style={{ fontSize: 12, color: palette.subText }}>
+              Curated from BAIR, The Gradient, MSR, Google AI, DeepMind, arXiv
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Switch
+              checked={dark}
+              onChange={(_, data) => setDark(data.checked)}
+              label={dark ? 'Dark' : 'Light'}
+            />
+            <Button appearance="primary" onClick={onRefresh} disabled={refreshing}>
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </Button>
+          </div>
         </div>
 
-        {/* Scrollable list */}
-        <div style={{ overflowY: 'auto', minHeight: 0, paddingRight: 4 }}>
-          {resources.map(r => (
-            <Card key={r.id} style={{ marginBottom: 12, padding: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ minWidth: 0 }}>
-                  <Text weight="semibold">{r.title}</Text>
-                  <div style={{ fontSize: 12, color: dark ? '#cfcfcf' : '#6b7280' }}>
-                    {r.track} • {r.level}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                  <Button appearance="primary" onClick={() => setSelected(r)}>
-                    Open
-                  </Button>
-                  {r.url && (
-                    <Button as="a" href={r.url} target="_blank" rel="noreferrer">
-                      Read
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </Card>
-          ))}
-          {resources.length === 0 && (
-            <div style={{ color: dark ? '#9aa0a6' : '#6b7280' }}>
-              No items yet. Try refreshing in a minute or check server logs.
+        <div style={{ height: 4, background: palette.divider }} />
+
+        <div
+          style={{
+            overflowY: 'auto',
+            padding: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            minHeight: 0,
+          }}
+        >
+          {loading && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 8 }}>
+              <Spinner size="small" />
+              <span style={{ color: palette.subText }}>Loading latest items…</span>
             </div>
           )}
+
+          {err && !loading && (
+            <Card appearance="filled" style={{ background: palette.cardBg, border: `1px solid ${palette.border}`, padding: 12 }}>
+              <Text weight="semibold">Couldn’t load news</Text>
+              <div style={{ color: palette.subText, marginTop: 6, fontSize: 13 }}>{err}</div>
+              <div style={{ marginTop: 10 }}>
+                <Button onClick={onRefresh}>Try Again</Button>
+              </div>
+            </Card>
+          )}
+
+          {!loading && !err && news.length === 0 && (
+            <div style={{ color: palette.subText, padding: 8, fontSize: 13 }}>
+              No items yet. Try Refresh.
+            </div>
+          )}
+
+          {!loading &&
+            !err &&
+            news.map((n) => (
+              <button
+                key={n.id || n.link}
+                onClick={() => setSelected(n)}
+                style={{
+                  textAlign: 'left',
+                  background: selected?.id === n.id ? (dark ? '#2a2a2a' : '#eef4ff') : 'transparent',
+                  border: `1px solid ${palette.border}`,
+                  borderRadius: 10,
+                  padding: 12,
+                  cursor: 'pointer',
+                  color: palette.text,
+                }}
+              >
+                <div style={{ fontWeight: 700, marginBottom: 4, lineHeight: 1.2 }}>{n.title}</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      background: palette.chip,
+                      color: palette.chipText,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                    }}
+                  >
+                    {n.source || 'Source'}
+                  </span>
+                  <span style={{ fontSize: 12, color: palette.subText }}>{fmtDate(n.isoDate)}</span>
+                </div>
+                <div style={{ fontSize: 13, color: palette.subText }}>
+                  {n.summary?.slice(0, 200) || ''}
+                  {n.summary && n.summary.length > 200 ? '…' : ''}
+                </div>
+              </button>
+            ))}
         </div>
       </div>
 
-      {/* Center content */}
-      <div style={{ flex: 1, padding: 12, minWidth: 0 }}>
-        {selected ? (
+      {/* Center: Selected item */}
+      <div
+        style={{
+          background: palette.railBg,
+          border: `1px solid ${palette.border}`,
+          borderRadius: 12,
+          padding: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
+        <Text as="h2" style={{ marginTop: 0, fontSize: 20, fontWeight: 800 }}>
+          {selected ? selected.title : 'Welcome'}
+        </Text>
+
+        {!selected ? (
+          <div style={{ color: palette.subText, fontSize: 14 }}>
+            Pick an item from the left to view a summary here. You can switch themes at the top and refresh the feed anytime.
+          </div>
+        ) : (
           <>
-            <h3 style={{ marginTop: 4, marginBottom: 6 }}>{selected.title}</h3>
-            <div style={{ color: dark ? '#dddddd' : '#374151', whiteSpace: 'pre-wrap' }}>
-              {selected.summary}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 4, marginBottom: 8 }}>
+              <span
+                style={{
+                  fontSize: 12,
+                  background: palette.chip,
+                  color: palette.chipText,
+                  padding: '2px 8px',
+                  borderRadius: 999,
+                }}
+              >
+                {selected.source || 'Source'}
+              </span>
+              <span style={{ fontSize: 12, color: palette.subText }}>{fmtDate(selected.isoDate)}</span>
+            </div>
+
+            <Divider style={{ margin: '8px 0', borderColor: 'transparent' }} />
+
+            <div
+              style={{
+                whiteSpace: 'pre-wrap',
+                lineHeight: 1.5,
+                color: palette.text,
+                fontSize: 15,
+              }}
+            >
+              {selected.summary || 'No summary available.'}
+            </div>
+
+            <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+              {selected.link && (
+                <Button appearance="primary" onClick={() => window.open(selected.link, '_blank', 'noopener,noreferrer')}>
+                  Open Original
+                </Button>
+              )}
+              <Button onClick={() => navigator.clipboard?.writeText(selected.link || '')} disabled={!selected.link}>
+                Copy Link
+              </Button>
             </div>
           </>
-        ) : (
-          <div style={{ color: dark ? '#888888' : '#6b7280' }}>
-            Select a resource to open the chat assistant.
-          </div>
         )}
       </div>
 
-      {/* High-contrast vertical divider */}
+      {/* Right rail: Chat */}
       <div
-        aria-hidden="true"
         style={{
-          width: 1,
-          alignSelf: 'stretch',
-          background: dark ? '#2e2e2e' : '#e1e4ea',
-          boxShadow: dark ? '0 0 0 1px #2e2e2e' : '0 0 0 1px #e1e4ea'
+          background: palette.railBg,
+          border: `1px solid ${palette.border}`,
+          borderRadius: 12,
+          padding: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          overflow: 'hidden', // ensure ChatPanel stays inside
         }}
-      />
-
-      {/* Right rail (chat) */}
-      <div style={{ width: 420, paddingLeft: 12, height: '100%', minHeight: 0 }}>
-        <ChatPanel resource={selected} dark={dark} />
+      >
+        {/* We lazy-load ChatPanel to avoid import order issues */}
+        <ChatMount selected={selected} dark={dark} />
       </div>
     </div>
   );
+}
+
+/** Separate component so we can require() lazily (avoids circular import hiccups during edits) */
+function ChatMount({ selected, dark }) {
+  const [ChatPanel, setChatPanel] = useState(null);
+
+  useEffect(() => {
+    // dynamic import
+    import('./ChatPanel').then((m) => setChatPanel(() => m.default));
+  }, []);
+
+  if (!ChatPanel) {
+    return (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 8 }}>
+        <Spinner size="tiny" />
+        <span style={{ fontSize: 13, opacity: 0.8 }}>Loading chat…</span>
+      </div>
+    );
+  }
+
+  // NOTE: ChatPanel currently uses /api/chat which reads /server/resources.json.
+  // Passing the news item won't give server-side context yet, but keeps UX consistent.
+  // We can upgrade the server later to accept inline context.
+  return <ChatPanel resource={null} dark={dark} />;
 }
