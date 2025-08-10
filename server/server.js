@@ -1,11 +1,11 @@
 // server/server.js
-// Minimal, reliable feeds + arXiv API + fast-fail timeouts.
-// Summarization is optional (env SUMMARIZE=true). Default: off.
+// Reliable dynamic feeds + arXiv API + fast timeouts + optional AI summaries.
+// Also serves /api/resources (local) and /api/chat (OpenAI proxy).
 
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch');
+const fetch = require('node-fetch'); // v2.x
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const RSSParser = require('rss-parser');
@@ -13,44 +13,60 @@ const RSSParser = require('rss-parser');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ---------- OpenAI config (summaries off until quota set) ----------
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+/* -------------------- ENV + DEFAULTS -------------------- */
+
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
+const OPENAI_MODEL = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
 const SUMMARIZE = String(process.env.SUMMARIZE || 'false').toLowerCase() === 'true';
 
-// ---------- Timeouts / limits ----------
-const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 15000); // 15s
-const FEED_TIMEOUT_MS = Number(process.env.FEED_TIMEOUT_MS || 10000);       // 10s per feed
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 15000); // article/summary fetch
+const FEED_TIMEOUT_MS = Number(process.env.FEED_TIMEOUT_MS || 10000);       // per-feed
 const MAX_ITEMS_PER_FEED = Number(process.env.MAX_ITEMS_PER_FEED || 8);
 const TOTAL_MAX_ITEMS = Number(process.env.TOTAL_MAX_ITEMS || 25);
 
-// ---------- Feeds (reliable set) ----------
-const FEEDS = [
-  // BAIR (Berkeley AI) blog
+/* -------------------- FEEDS (UPDATED) -------------------- */
+/* Replaced the two 404 feeds with working ones and added fallbacks. */
+const BLOG_FEEDS = [
+  // BAIR (Berkeley AI)
   'https://bair.berkeley.edu/blog/feed.xml',
   // The Gradient
   'https://thegradient.pub/rss/',
-  // Microsoft Research blog (official RSS)
+  // Microsoft Research
   'https://www.microsoft.com/en-us/research/feed/',
-  // NOTE: We intentionally skip W&B + OpenAI blog feeds for now (flaky/malformed/timeouts)
+  // Google AI (category)
+  'https://blog.google/technology/ai/rss/',
+  // Google Blog (site-wide fallback)
+  'https://blog.google/feed/',
+  // DeepMind (classic)
+  'https://deepmind.com/blog/feed/basic',
+  // DeepMind (new domain)
+  'https://deepmind.google/blog/rss.xml'
 ];
 
-// arXiv API endpoints (Atom feeds that parse well; faster than their public RSS endpoints)
+// arXiv API (Atom) for cs.CL and cs.LG — faster and more reliable than public RSS endpoints
 const ARXIV_FEEDS = [
   'http://export.arxiv.org/api/query?search_query=cat:cs.CL&start=0&max_results=10&sortBy=submittedDate&sortOrder=descending',
-  'http://export.arxiv.org/api/query?search_query=cat:cs.LG&start=0&max_results=10&sortBy=submittedDate&sortOrder=descending',
+  'http://export.arxiv.org/api/query?search_query=cat:cs.LG&start=0&max_results=10&sortBy=submittedDate&sortOrder=descending'
 ];
 
-// ---------- Helpers ----------
+/* -------------------- APP MIDDLEWARE -------------------- */
 app.use(cors());
 app.use(bodyParser.json());
 
-// Timeout helper for fetch
+/* -------------------- HELPERS -------------------- */
+
+const parser = new RSSParser({
+  timeout: FEED_TIMEOUT_MS
+});
+
 function fetchWithTimeout(url, ms) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), ms);
-    fetch(url, { signal: controller.signal, headers: { 'User-Agent': 'ai-learning-dashboard/1.0' } })
+    fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'ai-learning-dashboard/1.0' }
+    })
       .then(res => {
         clearTimeout(id);
         resolve(res);
@@ -62,19 +78,24 @@ function fetchWithTimeout(url, ms) {
   });
 }
 
-async function parseFeed(url, parser) {
+async function parseFeed(url) {
   try {
     const res = await fetchWithTimeout(url, FEED_TIMEOUT_MS);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    const parsed = await parser.parseString(text);
+    const xml = await res.text();
+    const parsed = await parser.parseString(xml);
     const items = (parsed.items || []).slice(0, MAX_ITEMS_PER_FEED).map(it => ({
       id: it.guid || it.id || it.link || (it.title || '').slice(0, 80),
       title: it.title || 'Untitled',
       link: it.link || '',
       isoDate: it.isoDate || it.pubDate || '',
       source: parsed.title || url,
-      summary: (it.contentSnippet || it.content || it.summary || '').toString().trim().slice(0, 500),
+      // Trim long descriptions to keep the UI snappy; we’ll optionally summarize later
+      summary: (it.contentSnippet || it.content || it.summary || '')
+        .toString()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 500)
     }));
     return { ok: true, url, items };
   } catch (e) {
@@ -84,28 +105,22 @@ async function parseFeed(url, parser) {
 }
 
 async function collectFeeds() {
-  const parser = new RSSParser({
-    timeout: FEED_TIMEOUT_MS,
-  });
-
-  const urls = [...FEEDS, ...ARXIV_FEEDS];
-  const results = await Promise.all(urls.map(u => parseFeed(u, parser)));
-
-  // flatten + sort by date desc + cap
+  const urls = [...BLOG_FEEDS, ...ARXIV_FEEDS];
+  const results = await Promise.all(urls.map(u => parseFeed(u)));
   const all = results.flatMap(r => r.items);
   all.sort((a, b) => (new Date(b.isoDate || 0)) - (new Date(a.isoDate || 0)));
   return all.slice(0, TOTAL_MAX_ITEMS);
 }
 
-// best-effort HTML fetch (for “readable” previews); many sites block – we keep it optional
-async function fetchReadable(url) {
+// Optional: fetch a tiny HTML preview; many sites block scraping, so this is best-effort only.
+// We keep it lightweight (no Readability/JS-DOM) to avoid extra deps.
+async function fetchPreview(url) {
   try {
     const res = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // We don’t run heavy readability parsing on the server to keep it simple & fast;
-    // just return the first ~1500 chars of the HTML as a fallback preview.
     const html = await res.text();
-    return html.slice(0, 1500);
+    // Return first ~1000 chars for context; client shows the AI summary or this snippet.
+    return html.replace(/\s+/g, ' ').slice(0, 1000);
   } catch (e) {
     console.error(`Readable fetch failed: ${url} ${e.message || e}`);
     return '';
@@ -113,8 +128,8 @@ async function fetchReadable(url) {
 }
 
 async function summarizeText(text) {
-  if (!SUMMARIZE || !OPENAI_API_KEY) return ''; // disabled
-  const snippet = text.slice(0, 4000);
+  if (!SUMMARIZE || !OPENAI_API_KEY) return '';
+  const snippet = text.slice(0, 3500);
   try {
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -129,7 +144,7 @@ async function summarizeText(text) {
           { role: 'user', content: snippet }
         ],
         temperature: 0.2,
-        max_tokens: 300
+        max_tokens: 280
       })
     });
     const data = await resp.json();
@@ -144,8 +159,9 @@ async function summarizeText(text) {
   }
 }
 
-// ---------- API Routes ----------
-app.get('/api/resources', (req, res) => {
+/* -------------------- API: STATIC RESOURCES -------------------- */
+
+app.get('/api/resources', (_req, res) => {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'resources.json'), 'utf8'));
     res.json({ resources: data });
@@ -154,16 +170,25 @@ app.get('/api/resources', (req, res) => {
   }
 });
 
-// Pull fresh items across feeds + (optional) quick preview/summaries
-app.get('/api/news', async (req, res) => {
+/* -------------------- API: DYNAMIC NEWS -------------------- */
+
+app.get('/api/news', async (_req, res) => {
   try {
     const items = await collectFeeds();
 
-    // Optionally fetch a tiny HTML preview & summarize
-    const enriched = await Promise.all(items.map(async (it) => {
-      const preview = await fetchReadable(it.link);
-      const summary = preview ? await summarizeText(preview) : '';
-      return { ...it, preview, aiSummary: summary };
+    // Enrich: tiny HTML preview + optional AI summary
+    const enriched = await Promise.all(items.map(async it => {
+      const preview = await fetchPreview(it.link);
+      const aiSummary = preview ? await summarizeText(preview) : '';
+      return {
+        id: it.id,
+        title: it.title,
+        link: it.link,
+        source: it.source,
+        isoDate: it.isoDate,
+        // Prefer AI summary if available; otherwise fall back to feed summary or preview
+        summary: aiSummary || it.summary || preview
+      };
     }));
 
     res.json({ items: enriched });
@@ -172,11 +197,13 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
-// Chat proxy (unchanged from your working version, slight hardening)
+/* -------------------- API: CHAT PROXY -------------------- */
+
 app.post('/api/chat', async (req, res) => {
   const { resourceId, message } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
 
+  // Pull from local resources for now (you can also wire to /api/news if you want).
   let resources = [];
   try {
     resources = JSON.parse(fs.readFileSync(path.join(__dirname, 'resources.json'), 'utf8'));
@@ -186,7 +213,8 @@ app.post('/api/chat', async (req, res) => {
   const rawContext = resource ? (resource.summary || resource.content || resource.title || '') : '';
   const context = rawContext.length > 3000 ? rawContext.slice(0, 3000) + '\n\n[Truncated]' : rawContext;
 
-  const systemPrompt = `You are an expert tutor for a senior product design and user research leader. Use the provided resource (if any) to give clear, actionable answers, examples, and follow-up questions. Be concise.`;
+  const systemPrompt = `You are an expert tutor for a senior product design and user research leader.
+Use the provided resource context if present; be concise and actionable.`;
 
   const messages = [{ role: 'system', content: systemPrompt }];
   if (context) messages.push({ role: 'system', content: `RESOURCE:\n${context}` });
@@ -227,13 +255,16 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Serve built client
+/* -------------------- STATIC CLIENT -------------------- */
+
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
-  app.get('*', (req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+  app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 } else {
-  app.get('/', (req, res) => res.send('Client not built. Run `npm run build`.'));
+  app.get('/', (_req, res) => res.send('Client not built. Run `npm run build`.'));
 }
+
+/* -------------------- START -------------------- */
 
 app.listen(PORT, () => console.log(`Server listening on ${PORT}`));
