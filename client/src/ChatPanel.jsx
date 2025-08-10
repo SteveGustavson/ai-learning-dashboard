@@ -4,169 +4,85 @@ import { Textarea, Button, Avatar, Text } from '@fluentui/react-components';
 export default function ChatPanel({ resource, dark }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const chatEndRef = useRef(null);
+  const listRef = useRef();
 
-  // Scroll to bottom whenever messages change
   useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [messages]);
-
-  // Reset when resource changes
-  useEffect(() => {
-    if (resource) {
-      setMessages([
-        {
-          role: 'assistant',
-          content: `Context: ${resource.title}`,
-        },
-      ]);
-    }
+    if (resource) setMessages([{ role: 'system', content: `Context: ${resource.title}` }]);
+    else setMessages([]);
   }, [resource]);
 
-  async function send() {
+  const send = async () => {
     if (!input.trim()) return;
-
-    // Add the user message locally
-    setMessages((prev) => [...prev, { role: 'user', content: input }]);
-    const toSend = input;
+    const userMsg = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMsg]);
     setInput('');
-
     try {
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          resourceId: resource?.id,
-          messages: [...messages, { role: 'user', content: toSend }],
-        }),
+        body: JSON.stringify({ resourceId: resource ? resource.id : null, message: input }),
       });
 
       const data = await resp.json();
-
-      // ✅ Improved error handling
       if (data.reply) {
-        setMessages((prev) => [
-          ...prev,
-          { role: 'assistant', content: data.reply.content },
-        ]);
+        setMessages(prev => [...prev, { role: 'assistant', content: data.reply.content }]);
       } else {
         const details = (data.details || '').toString().slice(0, 400);
-        setMessages((prev) => [
+        setMessages(prev => [
           ...prev,
-          {
-            role: 'assistant',
-            content: `Error: ${data.error || 'unknown'}\n${details}`,
-          },
+          { role: 'assistant', content: `Error: ${data.error || 'unknown'}\n${details}` },
         ]);
       }
+      setTimeout(() => {
+        if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+      }, 50);
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `Error: ${err.message}` },
-      ]);
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Chat failed: ' + err.message }]);
     }
-  }
+  };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        borderLeft: dark ? '1px solid #333' : '1px solid #ddd',
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          padding: 12,
-          borderBottom: dark ? '1px solid #333' : '1px solid #ddd',
-        }}
-      >
-        <Text weight="semibold">AI Chat Assistant</Text>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>
-          Ask about the selected resource
+    <div style={{height:'100%', display:'flex', flexDirection:'column'}}>
+      <div style={{display:'flex', alignItems:'center', gap:12}}>
+        <Avatar name="AI" />
+        <div>
+          <Text weight="semibold">AI Chat Assistant</Text>
+          <div style={{fontSize:12, color: dark ? '#888' : '#4b5563'}}>Ask anything while you read</div>
         </div>
       </div>
 
-      {/* Messages */}
       <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: 12,
-          background: dark ? '#111' : '#fafafa',
-        }}
+        ref={listRef}
+        style={{flex:1, marginTop:12, overflowY:'auto', paddingRight:8}}
       >
         {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{
-              marginBottom: 12,
-              display: 'flex',
-              flexDirection: m.role === 'user' ? 'row-reverse' : 'row',
-              alignItems: 'flex-start',
-            }}
-          >
-            <Avatar
-              size={32}
-              name={m.role === 'user' ? 'You' : 'AI'}
-              color={m.role === 'user' ? 'brand' : 'neutral'}
-            />
+          <div key={i} style={{marginBottom:10, display:'flex', flexDirection: m.role==='user' ? 'row-reverse':'row', gap:8}}>
             <div
               style={{
-                marginLeft: m.role === 'user' ? 0 : 8,
-                marginRight: m.role === 'user' ? 8 : 0,
-                padding: 8,
-                background:
-                  m.role === 'user'
-                    ? dark
-                      ? '#2563eb'
-                      : '#dbeafe'
-                    : dark
-                    ? '#1f2937'
-                    : '#fff',
-                color:
-                  m.role === 'user'
-                    ? dark
-                      ? '#fff'
-                      : '#000'
-                    : dark
-                    ? '#e5e7eb'
-                    : '#111',
-                borderRadius: 6,
-                maxWidth: '75%',
-                whiteSpace: 'pre-wrap',
+                maxWidth:'75%',
+                background: m.role==='assistant'
+                  ? (dark ? '#2b2b2b' : '#f3f4f6')
+                  : (dark ? '#0b61a4' : '#0b61a4'),
+                padding:10,
+                borderRadius:10,
+                color: m.role==='assistant' ? (dark ? '#e5e7eb' : '#111827') : '#ffffff',
+                border: `1px solid ${dark ? '#3a3a3a' : '#d1d5db'}`
               }}
             >
-              {m.content}
+              <div style={{fontSize:14, lineHeight:1.45, whiteSpace:'pre-wrap'}}>{m.content}</div>
             </div>
           </div>
         ))}
-        <div ref={chatEndRef} />
       </div>
 
-      {/* Input */}
-      <div
-        style={{
-          padding: 12,
-          borderTop: dark ? '1px solid #333' : '1px solid #ddd',
-          display: 'flex',
-          gap: 8,
-        }}
-      >
-        <TextArea
+      <div style={{display:'flex', gap:8, marginTop:12}}>
+        <Textarea
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask GPT about this resource..."
-          style={{ flex: 1 }}
-          resize="none"
+          onChange={(_, data) => setInput(data.value)}
+          placeholder="Ask GPT about this topic…"
+          style={{flex:1}}
         />
-        <Button appearance="primary" onClick={send}>
-          Send
-        </Button>
+        <Button appearance="primary" onClick={send}>Send</Button>
       </div>
     </div>
   );
